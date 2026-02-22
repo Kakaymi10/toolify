@@ -1,67 +1,123 @@
 import inspect
-from typing import get_type_hints
+import json
+import enum
+from typing import get_type_hints, Any, Dict, List, Union, Optional, Type, Callable
+from pydantic import BaseModel
 
-def agent_tool(func):
+def toolify(func):
     """
-    Decorator that attaches a .to_schema() method to the function.
-    
-    Usage:
-        @agent_tool
-        def my_func(a: int): ...
-        
-        print(my_func.to_schema())
+    Decorator to mark a function as a tool.
+    In this MVP, it just marks it. 
+    Real schema generation happens in get_schema().
     """
-    type_map = {
-        str: "string",
-        int: "integer",
-        float: "number",
-        bool: "boolean",
-        list: "array",
-        dict: "object",
-        type(None): "null"
-    }
+    func._is_toolify = True
+    return func
 
-    # 1. Get Metadata
+def get_schema(func: Callable) -> Dict[str, Any]:
+    """
+    Generate an OpenAI-compatible JSON schema for a function.
+    """
+    if not hasattr(func, "_is_toolify"):
+        # You can call get_schema on undecorated functions too, 
+        # but the decorator is good practice.
+        pass
+
     name = func.__name__
-    description = func.__doc__.strip() if func.__doc__ else f"Call {name}"
+    doc = inspect.getdoc(func)
+    description = doc.split("\n\n")[0] if doc else f"Call function {name}"
     
-    # 2. Analyze Arguments (Type Hints)
-    sig = inspect.signature(func)
+    # 1. Type Hints
     type_hints = get_type_hints(func)
+    sig = inspect.signature(func)
     
     properties = {}
     required = []
-
+    
+    # 2. Iterate Parameters
     for param_name, param in sig.parameters.items():
-        # Get Python Type
-        py_type = type_hints.get(param_name, str) # Default to str if untyped
+        # Skip 'self' or 'cls' if method (simplification)
+        if param_name in ("self", "cls"):
+            continue
+            
+        py_type = type_hints.get(param_name, str)
+        param_desc = _extract_param_desc(doc, param_name)
         
-        # Map to JSON Type
-        # Handle simple optional types like Optional[int] roughly by checking origins if needed
-        # For MVP, we stick to direct mapping
-        json_type = type_map.get(py_type, "string")
-        
-        # Build Property
-        properties[param_name] = {
-            "type": json_type,
-            "description": f"Value for {param_name}" # TODO: Parse from docstring
-        }
-        
-        # Check if required (no default value)
-        if param.default == inspect.Parameter.empty:
+        # 3. Resolve JSON Schema Type
+        prop_schema = _py_type_to_json_schema(py_type)
+        if param_desc:
+            prop_schema["description"] = param_desc
+            
+        # 4. Handle Defaults
+        if param.default != inspect.Parameter.empty:
+            prop_schema["default"] = param.default
+        else:
             required.append(param_name)
+            
+        properties[param_name] = prop_schema
 
-    # 3. Construct Schema
-    schema = {
-        "name": name,
-        "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required
+            }
         }
     }
 
-    # Attach to function
-    func.to_schema = lambda: schema
-    return func
+def _extract_param_desc(doc: str, param_name: str) -> Optional[str]:
+    """
+    Simple docstring parser for 'Args:' section.
+    Looks for lines like '  param_name (type): Description...'
+    """
+    if not doc:
+        return None
+    
+    lines = doc.split('\n')
+    for line in lines:
+        line = line.strip()
+        # Very naive parser: looks for "name (type): desc" or "name: desc"
+        if line.startswith(f"{param_name}"):
+            if ":" in line:
+                return line.split(":", 1)[1].strip()
+    return None
+
+def _py_type_to_json_schema(py_type: Type) -> Dict[str, Any]:
+    """
+    Map Python types to JSON schema.
+    Supports: str, int, float, bool, list, dict, Enum, Pydantic models.
+    """
+    # 1. Pydantic Models
+    if isinstance(py_type, type) and issubclass(py_type, BaseModel):
+        # Pydantic has a built-in schema generator
+        schema = py_type.model_json_schema()
+        # Remove 'title' to keep it clean if desired, or keep it
+        return schema
+
+    # 2. Primitives
+    if py_type == str:
+        return {"type": "string"}
+    if py_type == int:
+        return {"type": "integer"}
+    if py_type == float:
+        return {"type": "number"}
+    if py_type == bool:
+        return {"type": "boolean"}
+    if py_type == list or getattr(py_type, "__origin__", None) == list:
+        # TODO: Handle List[int] etc.
+        return {"type": "array", "items": {}} 
+    if py_type == dict or getattr(py_type, "__origin__", None) == dict:
+        return {"type": "object"}
+        
+    # 3. Enums
+    if isinstance(py_type, type) and issubclass(py_type, enum.Enum):
+        return {
+            "type": "string",
+            "enum": [e.value for e in py_type]
+        }
+        
+    # Default fallback
+    return {"type": "string"}
