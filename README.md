@@ -1,6 +1,5 @@
 # 🛠️ Toolify
 
-**Stop writing JSON schemas by hand.**
 
 Toolify converts your Python functions into OpenAI/Anthropic/Gemini-compatible tool schemas instantly using a simple decorator.
 
