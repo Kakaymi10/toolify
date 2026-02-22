@@ -1,4 +1,4 @@
-# Toolify-AI: The Standard for Agentic Tools
+# Toolify-AI: Zero Boilerplate for Agentic Tools
 
 [![PyPI version](https://badge.fury.io/py/toolify-ai.svg)](https://badge.fury.io/py/toolify-ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
